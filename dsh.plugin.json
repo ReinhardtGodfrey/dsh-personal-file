@@ -1,0 +1,8 @@
+{
+  "name": "dsh-profile-keeper",
+  "description": "从会话里的本人原话提取事实，按权重维护人格档案与记忆库；写前备份，改动可回看。",
+  "version": "0.1.0",
+  "entry": {
+    "name": "dsh-profile-keeper"
+  }
+}

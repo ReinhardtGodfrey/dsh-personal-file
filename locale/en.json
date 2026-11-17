@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Profile keeper",
+    "description": "Extracts facts from my own words in chat history and maintains the persona archive and memory file by weight, with a backup before every write.",
+    "detail": "docs/DETAIL.md"
+  }
+}

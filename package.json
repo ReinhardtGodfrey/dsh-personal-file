@@ -1,0 +1,32 @@
+{
+  "name": "dsh-profile-keeper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "从会话里的本人原话提取事实，按权重维护人格档案与记忆库",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "lib",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml",
+    "docs",
+    "dsh.plugin.json",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "dsh": ">=0.2.2-rc.1 <0.2.3-0"
+  },
+  "license": "MIT"
+}
