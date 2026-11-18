@@ -1,6 +1,6 @@
 {
   "name": "dsh-profile-keeper",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "从会话里的本人原话提取事实，按权重维护人格档案与记忆库",
   "type": "module",
