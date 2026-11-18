@@ -1,6 +1,8 @@
-data/
+﻿data/
 logs/
 backups/
 install-backup/
 node_modules/
 *.log
+test/_tmp/
+
