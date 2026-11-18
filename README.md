@@ -33,6 +33,15 @@ DSH 插件。它自己读 DSH 的会话日志，挑出本人说过的、值得�
 | `maxTokens` | `8000` | 单次判断调用的输出上限 |
 | `llm.provider` / `llm.model` / `llm.reasoningEffort` | 空 | 留空用宿主默认模型；要指定就填 |
 
+同样的键也可以写进插件目录里的 `data/config.json`（本地覆盖文件，不进仓库），适合放个人 QQ 号、档案路径和模型；两处都写了以 patch 里的 `config` 为准。
+
+```json
+{
+  "ownQq": "你的QQ号",
+  "llm": { "provider": "opencode-go", "model": "deepseek-v4.1-flash" }
+}
+```
+
 ## 它写什么、不写什么
 
 - 来源：只读 `user/message` 事件。本机 `user` 通道直接算本人；`qq` 通道按 `qq-bridge-config.json`（含历史备份）里的绑定号码判定，只有号码等于 `ownQq` 才算本人；群消息从正文前缀 `昵称（QQ号）：` 取号码；判不出身份的一律丢弃。

@@ -227,15 +227,30 @@ export function apply(ctx, config = {}) {
   })
 }
 
+/** data/config.json 是本地覆盖配置：不进仓库，用来填这个人的档案路径、QQ 号、模型等。 */
+function readLocalConfig() {
+  const file = path.join(pluginRoot, 'data', 'config.json')
+  try {
+    const text = fs.readFileSync(file, 'utf8')
+    const parsed = JSON.parse(text)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
 function resolveConfig(config) {
   const cfg = {}
   for (const [key, value] of Object.entries(DEFAULTS)) cfg[key] = value
-  for (const [key, value] of Object.entries(config || {})) {
-    if (value === undefined || value === null) continue
-    if (key === 'llm' && typeof value === 'object') {
-      cfg.llm = { ...DEFAULTS.llm, ...value }
-    } else {
-      cfg[key] = value
+  const layers = [readLocalConfig(), config || {}]
+  for (const layer of layers) {
+    for (const [key, value] of Object.entries(layer)) {
+      if (value === undefined || value === null) continue
+      if (key === 'llm' && typeof value === 'object') {
+        cfg.llm = { ...cfg.llm, ...value }
+      } else {
+        cfg[key] = value
+      }
     }
   }
   cfg.pluginRoot = pluginRoot
