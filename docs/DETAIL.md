@@ -16,12 +16,14 @@
 
 分档按类别定，不靠单一分数：
 
-- identity（5 分）：稳定身份、长期关系（家人、对象、亲密朋友）、明确禁令、长期工作方式、反复确认的偏好
+- identity（5 分）：稳定身份、长期关系（家人、对象、亲密朋友）、长期工作方式、反复确认的偏好
 - detail（4 分）：长期有用的具体事实或偏好，如项目细节、设备参数、具体流程
 - minor（3 分）：次要但可留的信息
 - temp（2 分）：临时状态、一次性安排、情绪，不写
 
-档案只收 identity；记忆库收 detail 与 minor；更低档只进日志。模型输出 `kind`，插件按 `KIND_WEIGHTS` 换算成权重，权重只用于排序与替换。
+档案只收 identity；记忆库收 detail 与 minor；更低档只进日志。规则类内容（插件用法、工具流程、路径、记账规则）即使长期有效也按 detail 或 minor 进记忆库，不进档案。模型输出 `kind`，插件按 `KIND_WEIGHTS` 换算成权重，权重只用于排序与替换。
+
+「别做某事」的要求走单独一档，不进档案也不进记忆库：模型输出 `target: "ban"` 的 add，插件校验原话、按 `banWeight` 分 5（绝对禁区）、4（必须先问）、3（尽量避开）三档，先过相似度自审，再落 `data/禁令待审.md`，等人工在设置页审批。
 
 落在边界上的「新增」会再问一次模型，两次按类别取较低档：5+4 判 4，5+2 直接丢。
 
@@ -55,7 +57,20 @@
 - 状态在 `data/state.json`：安装时刻、上次运行、每个文件的读取位置和 seq 水位、最近几条上下文、档案与记忆库的哈希。中断后按文件读取位置续读，不会扩大范围。
 - `data/last-run.json` 是最近一轮的完整结果快照。
 
-## 调度
+## 禁令的审核链路
+
+1. 模型只输出 `target: "ban"`、`banWeight`、`line`、`quote`，不直接写文件。
+2. `lib/bans.js` 的 `queueBans` 先自审：和规则文件（`rulesPath`）相似度 ≥0.6、和记忆库 ≥0.8、或待审清单里已有同一条，都不进清单，原因与相似度写进日志「禁令自审」段。
+3. 通过自审的落 `data/禁令待审.md`，格式 `- [档位] 内容 ｜依据：原话 ｜会话 ｜时间`。
+4. 设置页「禁令待审」页签按条列出来，点通过调 `POST /dsh-profile-keeper/bans`：先备份规则文件到插件 `backups/<时间戳>/`，再把条目追加到规则文件的「明确禁令」节（渲染成 `- [档位] YYYY-MM-DD：正文`），并从待审清单删掉；驳回只删清单。
+5. 未审批的禁令不会被当成规则执行，也不会进档案。
+
+## 设置页接口
+
+- 面板注册在客户端插件的 `settings.section`；宿主侧两个路由都用 `ctx.effect` 包 `webServer.register`，只开在 DSH 本地 webServer 上。
+- `GET /dsh-profile-keeper/overview`：读档汇总，返回档案分节、记忆库按主题的分组与日期、各权重条数、待确认条数、禁令条数、上次运行结果。不写盘。
+- `POST /dsh-profile-keeper/bans`：body 为 `{ "approve": ["<正文>"], "reject": ["<正文>"] }`，至少一项，否则 400；返回通过/驳回条数与备份路径。
+- 客户端模块改动后需要重启 DSH 才会加载新的一代 JS。
 
 - DSH 一启动就补跑一次。
 - 之后每分钟检查一次本地时间：过了 `runHour`（默认 13 点）且当天还没跑过，就跑一次。
@@ -64,7 +79,7 @@
 
 ## 开关
 
-- 配置走插件 patch 里的 `config`，可用字段：`archivePath`、`memoryPath`、`dshHome`、`sessionsRoot`、`ownQq`、`runHour`、`keepBackups`、`maxTokens`、`llm.provider`、`llm.model`、`llm.reasoningEffort`。
+- 配置走插件 patch 里的 `config`，可用字段：`archivePath`、`rulesPath`、`memoryPath`、`dshHome`、`sessionsRoot`、`ownQq`、`runHour`、`keepBackups`、`maxTokens`、`llm.provider`、`llm.model`、`llm.reasoningEffort`。
 - 改模型只影响这个插件自己的判断调用，不影响会话里用的模型。留空即用宿主默认模型。
 
 ## 已知边界

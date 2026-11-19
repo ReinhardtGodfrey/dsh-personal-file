@@ -26,9 +26,14 @@ function check(name, ok, extra = '') {
 // 1. 会话文件枚举（用本机 DSH 的 sessions 目录；没有就跳过下面两组解码检查）
 const sessionsRoot = path.join(process.env.DSH_HOME || path.join(os.homedir(), '.dsh'), 'sessions')
 const files = reader.listSessionFiles(sessionsRoot)
-check('listSessionFiles 能列出会话文件', files.length > 0, files.length + ' 个')
-check('每个条目都有 sessionId/project/file/size', files.every((f) => f.sessionId && f.project && f.file && Number.isFinite(f.size)))
+if (files.length) {
+  check('listSessionFiles 能列出会话文件', true, files.length + ' 个')
+  check('每个条目都有 sessionId/project/file/size', files.every((f) => f.sessionId && f.project && f.file && Number.isFinite(f.size)))
+} else {
+  console.log('SKIP 本机没有 ' + sessionsRoot + ' 下的会话文件，跳过解码检查（装上 DSH 并产生会话后再跑这条）')
+}
 
+if (files.length) {
 // 2. 逐帧解码最大的一个会话文件
 const biggest = files.slice().sort((a, b) => b.size - a.size)[0]
 const decoded = reader.readSessionAppend(biggest.file, 0)
@@ -69,6 +74,7 @@ const tail = reader.readSessionAppend(biggest.file, halfway)
 if (tail) {
   check('从中间偏移读取不抛错', Array.isArray(tail.events))
   check('中间偏移读取的 nextOffset 到达文件尾', tail.nextOffset === tail.size)
+}
 }
 
 // 6. ops 校验

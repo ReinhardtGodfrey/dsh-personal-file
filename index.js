@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url'
 import { runOnce } from './lib/pipeline.js'
 import { runBackfill } from './lib/backfill.js'
 import { runReclassify } from './lib/reclassify.js'
-import { exists, readText } from './lib/store.js'
+import { runRegroup } from './lib/regroup.js'
+import { buildOverview } from './lib/overview.js'
+import { decideBans } from './lib/bans.js'
+import { exists, readText, appendDailyLog, localTime } from './lib/store.js'
 
 const pluginRoot = path.dirname(fileURLToPath(import.meta.url))
 const LOG_PREFIX = '[个人档案]'
@@ -16,6 +19,8 @@ const dshHome = process.env.DSH_HOME || path.join(home, '.dsh')
 const DEFAULTS = {
   // 个人档案默认放在 ~/.agents/AGENTS.md；如果 DSH 的指令加载器指向别处，在这里改。
   archivePath: path.join(home, '.agents', 'AGENTS.md'),
+  // 硬性规则文件（禁令审批通过后写进这里的「明确禁令」节）
+  rulesPath: process.env.DSH_RULES_PATH || path.join(dshHome, 'AGENTS.md'),
   memoryPath: path.join(pluginRoot, 'data', '记忆库.md'),
   dshHome,
   sessionsRoot: path.join(dshHome, 'sessions'),
@@ -29,7 +34,7 @@ const DEFAULTS = {
   llm: {},
 }
 
-export const inject = ['timer', 'llm']
+export const inject = ['timer', 'llm', 'webServer']
 
 export function apply(ctx, config = {}) {
   const cfg = resolveConfig(config)
@@ -140,8 +145,72 @@ export function apply(ctx, config = {}) {
     return true
   }
 
+  // 旧条目归组：data/regroup.request 存在时给记忆库里的旧条目补主题、档位和日期。
+  const maybeRegroup = async () => {
+    if (runtime.running) return false
+    const request = path.join(pluginRoot, 'data', 'regroup.request')
+    if (!exists(request)) return false
+    runtime.running = true
+    const taken = request + '.running'
+    try {
+      fs.renameSync(request, taken)
+    } catch {
+      runtime.running = false
+      return false
+    }
+    try {
+      const result = await runRegroup(ctx, cfg, { trigger: 'regroup' })
+      console.info(
+        LOG_PREFIX + ' 旧条目归类完成：' + result.status +
+          '（' + result.total + ' 条 → ' + result.topics + ' 个主题，有日期 ' + result.dated + '）',
+      )
+      try {
+        fs.rmSync(taken, { force: true })
+      } catch {
+        // 标记清不掉不影响后面
+      }
+    } catch (error) {
+      console.error(LOG_PREFIX + ' 旧条目归类异常：' + (error && error.message ? error.message : String(error)))
+      try {
+        fs.writeFileSync(
+          path.join(pluginRoot, 'data', 'regroup.error.txt'),
+          String((error && error.message) || error) + '\n',
+          'utf8',
+        )
+      } catch {
+        // 诊断文本写不下就跳过
+      }
+      try {
+        fs.renameSync(taken, path.join(pluginRoot, 'data', 'regroup.request.failed'))
+      } catch {
+        // 改不动就留着，下次人工处理
+      }
+    } finally {
+      runtime.running = false
+    }
+    return true
+  }
+
   const recoverStaleReclassify = () => {
     const request = path.join(pluginRoot, 'data', 'reclassify.request')
+    const running = request + '.running'
+    if (!exists(running) || exists(request)) return
+    let ageMs = 0
+    try {
+      ageMs = Date.now() - fs.statSync(running).mtimeMs
+    } catch {
+      return
+    }
+    if (ageMs < 30 * 60 * 1000) return
+    try {
+      fs.renameSync(running, request)
+    } catch {
+      // 改不动就保持原样
+    }
+  }
+
+  const recoverStaleRegroup = () => {
+    const request = path.join(pluginRoot, 'data', 'regroup.request')
     const running = request + '.running'
     if (!exists(running) || exists(request)) return
     let ageMs = 0
@@ -180,6 +249,8 @@ export function apply(ctx, config = {}) {
   }
   recoverStaleBackfill()
   recoverStaleReclassify()
+  recoverStaleRegroup()
+  registerOverviewRoute(ctx, cfg)
 
   // 启动即补跑一次；日常靠每分钟检查 13:00
   // 延迟 20 秒，等宿主的 llm 凭据/提供方都注册完再跑；太早会报 no credential
@@ -187,6 +258,7 @@ export function apply(ctx, config = {}) {
     await run('startup')
     await maybeBackfill()
     await maybeReclassify()
+    await maybeRegroup()
   }, 20 * 1000)
 
   ctx.effect(() => {
@@ -197,6 +269,10 @@ export function apply(ctx, config = {}) {
     }
     return timer.interval(() => {
       try {
+        if (exists(path.join(pluginRoot, 'data', 'regroup.request'))) {
+          maybeRegroup()
+          return
+        }
         if (exists(path.join(pluginRoot, 'data', 'reclassify.request'))) {
           maybeReclassify()
           return
@@ -255,6 +331,91 @@ function resolveConfig(config) {
   }
   cfg.pluginRoot = pluginRoot
   return cfg
+}
+
+/**
+ * 设置页「个人档案」的数据接口：只读，把档案与记忆库整理成 JSON。
+ * 客户端 lib/client.js 拉到数据后在设置左侧栏那一项里渲染。
+ */
+function registerOverviewRoute(ctx, cfg) {
+  const server = ctx.webServer || (typeof ctx.get === 'function' ? ctx.get('webServer') : undefined)
+  if (!server || typeof server.register !== 'function') {
+    console.error(LOG_PREFIX + ' 没有 webServer 服务，设置页数据接口不可用')
+    return
+  }
+  ctx.effect(() =>
+    server.register({
+      kind: 'exact',
+      path: '/dsh-profile-keeper/overview',
+      handler: async (req, res) => {
+        const reply = (status, payload) => {
+          try {
+            res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+            res.end(JSON.stringify(payload))
+          } catch {
+            // 连接已断就没办法回了
+          }
+        }
+        try {
+          reply(200, buildOverview(cfg))
+        } catch (error) {
+          reply(500, { ok: false, error: String((error && error.message) || error) })
+        }
+      },
+    }),
+  )
+  ctx.effect(() =>
+    server.register({
+      kind: 'exact',
+      path: '/dsh-profile-keeper/bans',
+      handler: async (req, res) => {
+        const reply = (status, payload) => {
+          try {
+            res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+            res.end(JSON.stringify(payload))
+          } catch {
+            // 连接已断就没办法回了
+          }
+        }
+        let body = ''
+        try {
+          for await (const chunk of req) body += chunk
+        } catch {
+          // 读请求体失败就按空处理，下面会报缺参数
+        }
+        let payload = {}
+        try {
+          payload = JSON.parse(body || '{}')
+        } catch {
+          payload = {}
+        }
+        const approve = Array.isArray(payload.approve) ? payload.approve.map(String) : []
+        const reject = Array.isArray(payload.reject) ? payload.reject.map(String) : []
+        if (!approve.length && !reject.length) {
+          reply(400, { ok: false, error: 'approve 和 reject 至少要有一项' })
+          return
+        }
+        try {
+          const decision = decideBans(cfg, { approve, reject })
+          const logLines = []
+          for (const item of decision.approved) logLines.push('- 通过 [' + item.banWeight + '] ' + item.line)
+          for (const item of decision.rejected) logLines.push('- 驳回 ' + item.line)
+          if (decision.backupPath) logLines.push('- 规则文件备份：' + decision.backupPath)
+          if (logLines.length) {
+            appendDailyLog(path.join(cfg.pluginRoot, 'logs'), '\n## ' + localTime() + ' 禁令审批（设置页）\n' + logLines.join('\n') + '\n')
+          }
+          reply(200, {
+            ok: true,
+            approved: decision.approved.length,
+            rejected: decision.rejected.length,
+            backupPath: decision.backupPath,
+          })
+        } catch (error) {
+          reply(500, { ok: false, error: String((error && error.message) || error) })
+        }
+      },
+    }),
+  )
 }
 
 function todayAtHour(now, hour) {
